@@ -1,0 +1,97 @@
+name: Build Papaki Linux release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: papaki-linux-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Verify and package standalone runtime
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install locked dependencies
+        run: npm ci --include=dev
+
+      - name: Verify toolchain versions
+        run: |
+          echo "Node: $(node --version)"
+          echo "npm: $(npm --version)"
+          node -e "console.log('Next:', require('./node_modules/next/package.json').version)"
+          node -e "console.log('SWC:', require('./node_modules/@next/swc-linux-x64-gnu/package.json').version)"
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Type-check
+        run: npm run typecheck
+
+      - name: Run unit tests
+        run: npm run test
+
+      - name: Build standalone application
+        env:
+          NODE_ENV: production
+          NEXT_TELEMETRY_DISABLED: "1"
+        run: npm run build
+
+      - name: Verify standalone build
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f .next/BUILD_ID
+          test -f .next/standalone/server.js
+          test -d .next/standalone/.next/static
+          test -d .next/standalone/public
+          echo "BUILD_ID:"
+          cat .next/BUILD_ID
+
+      - name: Assemble Papaki release
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          release_root="$RUNNER_TEMP/argiropouloslaw-papaki-release"
+          archive="$GITHUB_WORKSPACE/argiropouloslaw-papaki-next-build.tar.gz"
+
+          mkdir -p "$release_root/.next"
+          cp -a .next/standalone "$release_root/.next/standalone"
+          cp start.js package.json package-lock.json "$release_root/"
+          cp .env.example DEPLOYMENT.md "$release_root/"
+
+          tar -czf "$archive" -C "$release_root" .
+          sha256sum "$(basename "$archive")" > "${archive}.sha256"
+
+          echo "Archive contents:"
+          tar -tzf "$archive" | sed -n '1,80p'
+          echo "Archive size:"
+          du -h "$archive"
+          echo "Checksum:"
+          cat "${archive}.sha256"
+
+      - name: Upload Papaki release artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: argiropouloslaw-papaki-linux-release
+          path: |
+            argiropouloslaw-papaki-next-build.tar.gz
+            argiropouloslaw-papaki-next-build.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
